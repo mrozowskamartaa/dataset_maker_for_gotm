@@ -4,11 +4,9 @@ import os
 import xarray as xr
 import numpy as np
 
-from scipy.interpolate import make_smoothing_spline
-
 from utility import (
-    compute_ekman_layer_thickness, compute_ekman_spiral,
-    calculate_f, compute_u_star, sample_from_bl_grid
+    BL_DEFINITIONS, compute_ekman_layer_thickness, compute_ekman_spiral,
+    calculate_f, compute_bl_depths, compute_u_star, interp_to_depth
 )
 
 
@@ -21,7 +19,9 @@ class FeatureRetreiver:
             dz: Optional[int] = None,
             dt: Optional[int] = None,
             n_inertial_periods: Optional[int] = None,
-            n_points_per_period: Optional[int] = None
+            n_points_per_period: Optional[int] = None,
+            bl_methods: Optional[list[str]] = None,
+            min_bl_levels: int = 4
     ) -> None:
 
         self.grid = grid
@@ -37,6 +37,9 @@ class FeatureRetreiver:
         self.dt = dt
         self.n_inertial_periods = n_inertial_periods
         self.n_points_per_period = n_points_per_period
+
+        self.bl_methods = list(BL_DEFINITIONS.keys()) if bl_methods is None else bl_methods
+        self.min_bl_levels = min_bl_levels
 
         self.alpha = -0.2
         self.grav = 9.81
@@ -216,127 +219,250 @@ class FeatureRetreiver:
         )
 
 
-    def make_sigma_profile_dataset(
-            self,
-            variable: str,
-            sigma_grid: list
-    ) -> xr.Dataset:
-        
+    def make_wb_dataset(self) -> xr.Dataset:
+
         coords = {
             'case': self.case_names,
-            'time': self.time,
-            'sigma_depth': sigma_grid
+            'time': self.time
         }
 
-        array = np.empty((len(self.case_names), len(self.time), len(sigma_grid)))
+        M = np.empty((len(self.case_names), len(self.time)))
 
         for i, case in enumerate(self.case_dict.keys()):
             output = self.get_output(case)
-            array[i] = sample_from_bl_grid(
-                output=output,
-                variable=variable,
-                depths_to_sample_at=sigma_grid
-            ).T
+            wb = -output.G.values
+            wb[wb > 0] = 0
 
-        data_vars = {f"{variable}": xr.DataArray(
-            array,
-            dims=['case', 'time', 'sigma_depth'],
+            if self.grid == "f_u_star":
+                dz = self.get_dz(output=output)
+                M[i] = (np.sum(wb, axis=1) * dz)[:len(self.time)]
+            elif self.grid == "constant":
+                dz = self.dz
+                M[i] = np.sum(wb, axis=1) * dz
+
+        data_vars = {"wb": xr.DataArray(
+            M,
+            dims=['case', 'time'],
             coords=coords
         )}
 
         return xr.Dataset(
             data_vars=data_vars,
             coords=coords
+        )
+
+
+    def align_time(
+            self,
+            array: np.ndarray
+    ) -> np.ndarray:
+        return array[:len(self.time)]
+
+
+    def bl_attrs(
+            self,
+            bl_methods: list[str]
+    ) -> dict:
+        return {
+            "sigma_convention": "depth below surface / boundary layer depth; 0 at the surface, 1 at the boundary layer base",
+            "bl_definitions": "; ".join(
+                f"{method}: {BL_DEFINITIONS[method]['variable']} < {BL_DEFINITIONS[method]['threshold']:g}"
+                for method in bl_methods
+            ),
+            "min_bl_levels": self.min_bl_levels
+        }
+
+
+    def sample_at_sigma(
+            self,
+            output: xr.Dataset,
+            variable: str,
+            sigma: np.ndarray,
+            bl_methods: list[str]
+    ) -> np.ndarray:
+        """Sample `variable` at each sigma, under each boundary layer definition.
+
+        Returns (bl_method, time, sigma). Each sigma is turned into a physical depth against
+        that definition's boundary layer depth and the variable is interpolated onto it along
+        its own vertical coordinate, so nothing is re-indexed across the staggered grids and
+        an unresolved boundary layer propagates as NaN rather than as a plausible number.
+        """
+        sigma = np.asarray(sigma, dtype=float)
+        bl_depths = compute_bl_depths(
+            output=output, methods=bl_methods, min_levels=self.min_bl_levels
+        )
+        return np.stack([
+            interp_to_depth(
+                output=output,
+                variable=variable,
+                depths=bl_depths[method][:, np.newaxis] * sigma[np.newaxis, :]
+            )
+            for method in bl_methods
+        ])
+
+
+    def make_bl_depth_dataset(
+            self,
+            bl_methods: Optional[list[str]] = None
+    ) -> xr.Dataset:
+
+        bl_methods = self.bl_methods if bl_methods is None else bl_methods
+
+        coords = {
+            'case': self.case_names,
+            'time': self.time,
+            'bl_method': bl_methods
+        }
+
+        array = np.empty((len(self.case_names), len(self.time), len(bl_methods)))
+
+        for i, case in enumerate(self.case_dict.keys()):
+            output = self.get_output(case)
+            bl_depths = compute_bl_depths(
+                output=output, methods=bl_methods, min_levels=self.min_bl_levels
+            )
+            array[i] = self.align_time(
+                np.stack([bl_depths[method] for method in bl_methods], axis=-1)
+            )
+
+        data_vars = {"bl_depth": xr.DataArray(
+            array,
+            dims=['case', 'time', 'bl_method'],
+            coords=coords
+        )}
+
+        return xr.Dataset(
+            data_vars=data_vars,
+            coords=coords,
+            attrs=self.bl_attrs(bl_methods=bl_methods)
+        )
+
+
+    def make_sigma_profile_dataset(
+            self,
+            variable: str,
+            sigma_grid: list,
+            bl_methods: Optional[list[str]] = None
+    ) -> xr.Dataset:
+
+        bl_methods = self.bl_methods if bl_methods is None else bl_methods
+        sigma_grid = np.asarray(sigma_grid, dtype=float)
+
+        coords = {
+            'case': self.case_names,
+            'time': self.time,
+            'sigma_depth': sigma_grid,
+            'bl_method': bl_methods
+        }
+
+        array = np.empty(
+            (len(self.case_names), len(self.time), len(sigma_grid), len(bl_methods))
+        )
+
+        for i, case in enumerate(self.case_dict.keys()):
+            output = self.get_output(case)
+            sampled = self.sample_at_sigma(
+                output=output,
+                variable=variable,
+                sigma=sigma_grid,
+                bl_methods=bl_methods
+            )
+            array[i] = self.align_time(np.moveaxis(sampled, 0, -1))
+
+        data_vars = {f"{variable}": xr.DataArray(
+            array,
+            dims=['case', 'time', 'sigma_depth', 'bl_method'],
+            coords=coords
+        )}
+
+        return xr.Dataset(
+            data_vars=data_vars,
+            coords=coords,
+            attrs=self.bl_attrs(bl_methods=bl_methods)
         )
     
     
     def make_var_at_bl_dataset(
         self,
         variable: str,
-        index_above_bl: int = 2,
-        smoothed: bool = False,
+        sigma: float = 0.9,
         log: bool = False,
-        z_max: int = 400
+        bl_methods: Optional[list[str]] = None
     ) -> xr.Dataset:
+
+        bl_methods = self.bl_methods if bl_methods is None else bl_methods
 
         coords = {
             'case': self.case_names,
-            'time': self.time
+            'time': self.time,
+            'bl_method': bl_methods
         }
-        
-        array = np.empty((len(self.case_names), len(self.time)))
+
+        array = np.empty((len(self.case_names), len(self.time), len(bl_methods)))
 
         for i, case in enumerate(self.case_dict.keys()):
             output = self.get_output(case)
-            t, z = output[variable].shape
-            z_grid = np.arange(z)[::-1]
-            if z == z_max:
-                z_mask = np.where(output['nuh'].values[:,:-1] > 1e-6, z_grid, np.nan)
-            elif z == int(z_max + 1):
-                z_mask = np.where(output['nuh'].values > 1e-6, z_grid, np.nan)
-            z_indices = np.nanmax(z_mask, axis=1)
-            z_indices = np.where(np.isnan(z_indices), 1, z_indices).astype(int)
-            var = np.log10(output[variable].values[np.arange(t),-z_indices+index_above_bl]) if log else output[variable].values[np.arange(t),-z_indices+index_above_bl]
-            if smoothed:
-                ran = np.arange(t)
-                smoothing = make_smoothing_spline(np.arange(len(var[1:])), var[1:], lam=10)
-                array[i] = smoothing(ran) if self.grid == "constant" else smoothing(ran[:len(self.time)])
-            else:
-                array[i] = var if self.grid == "constant" else var[:len(self.time)]
-        
+            sampled = self.sample_at_sigma(
+                output=output,
+                variable=variable,
+                sigma=[sigma],
+                bl_methods=bl_methods
+            )[:, :, 0]
+            if log:
+                sampled = np.log10(np.where(sampled > 0, sampled, np.nan))
+            array[i] = self.align_time(sampled.T)
+
         data_vars = {f"{variable}_bl": xr.DataArray(
             array,
-            dims=['case', 'time'],
+            dims=['case', 'time', 'bl_method'],
             coords=coords
         )}
 
         return xr.Dataset(
             data_vars=data_vars,
-            coords=coords
+            coords=coords,
+            attrs=self.bl_attrs(bl_methods=bl_methods)
         )
 
-    
+
     def make_var_across_bl_dataset(
         self,
         variable: str,
-        index_above_bl: int = 2,
-        index_below_bl: int = 2,
-        z_max: int = 400
+        sigma_above: float = 0.9,
+        sigma_below: float = 1.1,
+        bl_methods: Optional[list[str]] = None
     ) -> xr.Dataset:
+
+        bl_methods = self.bl_methods if bl_methods is None else bl_methods
 
         coords = {
             'case': self.case_names,
-            'time': self.time
+            'time': self.time,
+            'bl_method': bl_methods
         }
-        
-        array = np.empty((len(self.case_names), len(self.time)))
+
+        array = np.empty((len(self.case_names), len(self.time), len(bl_methods)))
 
         for i, case in enumerate(self.case_dict.keys()):
             output = self.get_output(case)
-            t, z = output[variable].shape
-            z_grid = np.arange(z)[::-1]
-            if z == z_max:
-                z_mask = np.where(output['nuh'].values[:,:-1] > 1e-6, z_grid, np.nan)
-            elif z == int(z_max + 1):
-                z_mask = np.where(output['nuh'].values > 1e-6, z_grid, np.nan)
-            z_indices = np.nanmax(z_mask, axis=1)
-            z_indices = np.where(np.isnan(z_indices), 1, z_indices).astype(int)
-            val_1 = output[variable].values[np.arange(t),-z_indices+index_above_bl]
-            val_2 = output[variable].values[np.arange(t),-z_indices-index_below_bl]
-            if self.grid == "constant":
-                array[i] = (val_1 + val_2) / (index_above_bl + index_below_bl)
-            elif self.grid == "f_u_star":
-                array[i] = ((val_1 + val_2) / (index_above_bl + index_below_bl))[:len(self.time)]
-        
+            sampled = self.sample_at_sigma(
+                output=output,
+                variable=variable,
+                sigma=[sigma_above, sigma_below],
+                bl_methods=bl_methods
+            )
+            array[i] = self.align_time(sampled.mean(axis=-1).T)
+
         data_vars = {f"{variable}_bl_mean": xr.DataArray(
             array,
-            dims=['case', 'time'],
+            dims=['case', 'time', 'bl_method'],
             coords=coords
         )}
 
         return xr.Dataset(
             data_vars=data_vars,
-            coords=coords
+            coords=coords,
+            attrs=self.bl_attrs(bl_methods=bl_methods)
         )
     
 

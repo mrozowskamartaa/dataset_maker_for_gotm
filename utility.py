@@ -2,10 +2,9 @@ import re
 import os
 from datetime import datetime, timedelta
 
+
 import numpy as np
 import xarray as xr
-
-from scipy.interpolate import make_smoothing_spline
 
 
 ### --- PHYSICS --- ###
@@ -107,13 +106,83 @@ def compute_bl_rh18(
     return bl
 
 
-def compute_bl_rh18_with_smoothing(
+### --- INTERPOLATED BOUNDARY LAYER DEPTH --- ###
+
+
+# Each definition is a (variable, threshold) pair. The threshold must sit clear of the
+# variable's floor in gotm.yaml, otherwise the crossing lands on the floor and no sub-grid
+# interpolation is possible: eps_min is 1e-12, so the eps definition below is degenerate as
+# it stands and wants raising to ~1e-11 before it can be compared against the others.
+BL_DEFINITIONS = {
+    "rh18": {"variable": "nuh", "threshold": 1e-6},
+    "eps": {"variable": "eps", "threshold": 1e-12},
+    "tke": {"variable": "tke", "threshold": 1e-9},
+}
+
+
+def vertical_dim(array: xr.DataArray) -> str:
+    for dim in ("zi", "z"):
+        if dim in array.dims:
+            return dim
+    raise ValueError(f"{array.name} has no vertical dimension: {array.dims}")
+
+
+def find_bl_depth(
         output: xr.Dataset,
-        variable: str = "nuh"
+        variable: str = "nuh",
+        threshold: float = 1e-6,
+        min_levels: int = 0
 ) -> np.ndarray:
-    bl = compute_bl_rh18(output=output, variable=variable)
-    smoothing = make_smoothing_spline(np.arange(len(bl)), bl, lam=10)
-    return smoothing(np.arange(len(bl)))
+    """Boundary layer depth [m, positive down], interpolated to the sub-grid crossing.
+
+    Scans downward from the surface and stops at the first level where `variable` drops
+    below `threshold`, then interpolates the crossing between that level and the one above.
+    Scanning from the surface rather than taking the deepest crossing keeps detached mixing
+    at depth (a bottom log-layer, say) out of the surface boundary layer, and works for
+    profiles that are not monotone in depth - nuh, which falls to zero at both the surface
+    and the base, is not, which is why masked-extrema interpolation misbehaves on it.
+
+    NaN where the surface level is itself below threshold, and where the layer spans fewer
+    than `min_levels` cells. The full column depth where nothing crosses.
+    """
+    var = output[variable].values
+    z = output[vertical_dim(output[variable])].values
+
+    # GOTM writes profiles bottom-up, so flip to run the scan from the surface down
+    var, z = var[:, ::-1], z[:, ::-1]
+
+    below = var < threshold
+    crosses = below.any(axis=1)
+    k = np.argmax(below, axis=1)  # first sub-threshold level, 0 where nothing crosses
+
+    rows = np.arange(var.shape[0])
+    k_safe = np.clip(k, 1, var.shape[1] - 1)
+
+    var_above, var_below = var[rows, k_safe - 1], var[rows, k_safe]
+    z_above, z_below = z[rows, k_safe - 1], z[rows, k_safe]
+
+    span = var_above - var_below
+    weight = np.divide(
+        var_above - threshold, span, out=np.zeros_like(span), where=span != 0
+    )
+
+    bl = z[:, 0] - (z_above + weight * (z_below - z_above))
+    bl[~crosses] = (z[:, 0] - z[:, -1])[~crosses]
+    bl[crosses & (k < max(min_levels, 1))] = np.nan
+
+    return bl
+
+
+def compute_bl_depths(
+        output: xr.Dataset,
+        methods: list[str] = None,
+        min_levels: int = 0
+) -> dict[str, np.ndarray]:
+    methods = list(BL_DEFINITIONS.keys()) if methods is None else methods
+    return {
+        method: find_bl_depth(output=output, min_levels=min_levels, **BL_DEFINITIONS[method])
+        for method in methods
+    }
 
 
 ### --- MATH --- ###
@@ -170,9 +239,68 @@ def last_profile(
 ### --- DATA PROCESSING --- ###
 
 
-def shift_nans_numpy(a):
-    mask = ~np.isnan(a)
-    return np.concatenate([a[mask], a[~mask]])
+def interp_to_depth(
+        output: xr.Dataset,
+        variable: str,
+        depths: np.ndarray
+) -> np.ndarray:
+    """Linearly interpolate `variable` to `depths` [m below the surface], one row per time.
+
+    Interpolates along the variable's own vertical coordinate, so centred variables (u, v,
+    temp) and interface variables (nuh, NN, Rig) can be sampled at the same physical depth
+    without either being re-indexed onto the other's staggered grid. NaN outside the water
+    column, and wherever `depths` is NaN.
+    """
+    array = output[variable]
+    dim = vertical_dim(array)
+
+    # GOTM writes profiles bottom-up, so flip to surface-first and measure downward
+    z = output[dim].values[:, ::-1]
+    values = array.transpose("time", dim).values[:, ::-1]
+
+    if not np.allclose(z[0], z[-1]):
+        raise ValueError("vertical grid varies in time; interpolation assumes it does not")
+
+    grid = z[0, 0] - z[0]
+
+    index = np.clip(np.searchsorted(grid, depths), 1, grid.size - 1)
+    weight = (depths - grid[index - 1]) / (grid[index] - grid[index - 1])
+
+    shallow = np.take_along_axis(values, index - 1, axis=1)
+    deep = np.take_along_axis(values, index, axis=1)
+
+    return np.where(
+        (depths < grid[0]) | (depths > grid[-1]),
+        np.nan,
+        shallow + weight * (deep - shallow)
+    )
+
+
+def interp_within_bl(
+        a: np.ndarray,
+        nz_tot: int
+) -> np.ndarray:
+    """Stretch one time step's in-boundary-layer values onto a fixed sigma grid.
+
+    `a` arrives bottom-up with NaN outside the boundary layer, so its valid values run from
+    the layer base up to the surface. Reversing them puts the surface at index 0, i.e. at
+    sigma = 0, and the layer base at sigma = 1. Stretching per time step is what makes sigma
+    relative to the instantaneous boundary layer depth rather than to the deepest layer
+    reached anywhere in the run.
+    """
+    mask = np.isnan(a)
+
+    if mask.all():
+        return np.zeros(nz_tot)
+
+    valid = a[~mask][::-1]
+
+    if valid.shape[0] == 1:
+        return np.ones(nz_tot) * valid
+
+    return np.interp(
+        np.linspace(0, 1, nz_tot), np.linspace(0, 1, valid.shape[0]), valid
+    )
 
 
 def sample_from_bl_grid(
@@ -180,15 +308,20 @@ def sample_from_bl_grid(
     variable: str,
     depths_to_sample_at: np.ndarray,
     bl_threshold: float = 1e-9,
-    bl_variable: str = "tke",
+    bl_variable: str = "tke"
 ) -> np.ndarray:
     masked_var = output[variable].where(output[bl_variable] > bl_threshold).T.values
     cleaned_var = masked_var[~np.isnan(masked_var).all(axis=1)]
-    shifted_var = np.apply_along_axis(shift_nans_numpy, axis=0, arr=cleaned_var)
-    var = np.nan_to_num(shifted_var, nan=0.0)
 
-    sigma_grid = np.linspace(1, 0, var.shape[0])
-    indices = np.argmin(np.abs(sigma_grid[:, np.newaxis] - depths_to_sample_at[np.newaxis, :]), axis=0)
+    var = np.apply_along_axis(
+        interp_within_bl, axis=0, arr=cleaned_var, nz_tot=cleaned_var.shape[0]
+    )
+
+    # ascending to match interp_within_bl: sigma 0 at the surface, 1 at the layer base
+    sigma_grid = np.linspace(0, 1, var.shape[0])
+    sigma = np.asarray(depths_to_sample_at, dtype=float)
+    indices = np.argmin(np.abs(sigma_grid[:, np.newaxis] - sigma[np.newaxis, :]), axis=0)
+
     return var[indices, :]
 
 
