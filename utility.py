@@ -188,20 +188,63 @@ def compute_bl_depths(
 ### --- MATH --- ###
 
 
-def calculate_rolling_average(
+def rolling_mean_over_inertial_period(
         case: str,
         dataset: xr.DataArray,
         variable: str,
         case_dict: dict,
         dt: int = 600
 ) -> np.ndarray:
+    """Centred running mean over one inertial period, same length as the input.
+
+    The padding is split so the output length no longer depends on the window parity, but
+    the first and last `window_size // 2` samples are still computed partly from reflected
+    data. That artifact is latitude dependent - the window spans ~2.9 days at 10 degrees
+    and ~0.5 days at 90 - so a scalar taken from the tail of this series inherits a
+    latitude dependent bias. For a mean over the end of a run use mean_over_last_days,
+    which needs no padding at all.
+    """
     data = dataset[variable].sel(case=case).values
-    lat = case_dict[case]['lat']
-    T = calculate_T(lat)
-    window_size = int(T/dt)
+    window_size = int(calculate_T(case_dict[case]['lat']) / dt)
+    padding = (window_size // 2, window_size - 1 - window_size // 2)
     return np.convolve(
-        np.pad(data, pad_width=int(window_size/2), mode="reflect"), np.ones(window_size)/window_size, mode='valid'
-    )[:-1]
+        np.pad(data, pad_width=padding, mode="reflect"),
+        np.ones(window_size) / window_size,
+        mode='valid'
+    )
+
+
+def mean_over_last_days(
+        series: np.ndarray,
+        dt: float,
+        n_days: float = 1.0
+) -> float:
+    n_samples = max(int(n_days * 24 * 60 * 60 / dt), 1)
+    return np.nanmean(series[-n_samples:])
+
+
+def roughness(series: np.ndarray) -> float:
+    """How steppy a time series is, normalised by its own variability.
+
+    The spread of the second difference over the spread of the series: a smooth inertial
+    oscillation scores near zero because its curvature is small, step-to-step jitter scores
+    order one. Second differences scale with the sampling rate, so the score carries both
+    the grid-quantisation steps in the series and how coarsely the inertial period is
+    sampled - on the constant grid that is ~138 samples per period at 10 degrees against 24
+    at 90.
+
+    Non-finite samples are dropped, so a series with interior gaps scores higher than it
+    should; leading NaN from an unresolved boundary layer is harmless.
+    """
+    finite = np.asarray(series, dtype=float)
+    finite = finite[np.isfinite(finite)]
+
+    if finite.size < 3:
+        return np.nan
+
+    spread = np.std(finite)
+
+    return np.std(np.diff(finite, n=2)) / spread if spread > 0 else np.nan
 
 
 def calculate_mean_over_inertial_period(
