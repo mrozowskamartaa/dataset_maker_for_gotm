@@ -53,19 +53,6 @@ def calculate_analytical_m_star_Nb(
     return c_Nb1 * np.exp(-c_Nb2 * x)
 
 
-def compute_tke_bl(
-        output: xr.Dataset,
-        variable: str = "tke"
-) -> np.ndarray:
-    z_above = output.zi.where(output[variable] > 1e-9).min(dim="zi")
-    z_below = output.zi.where(output[variable] < 1e-9).max(dim="zi")
-
-    tke_above = output[variable].where(output[variable] > 1e-9).min(dim="zi")
-    tke_below = output[variable].where(output[variable] < 1e-9).max(dim="zi")
-
-    return -1*(-z_above+z_below)/(tke_above-tke_below)*(1e-9-tke_below) + z_below
-
-
 def compute_ekman_layer_thickness(
         nu: float, 
         f: float
@@ -86,27 +73,7 @@ def compute_ekman_spiral(
     return u, v
 
 
-def compute_bl(
-        output: xr.Dataset,
-        variable: str = "eps"
-) -> np.ndarray:
-    bl_mask = np.where(output[variable].values > 1e-12, -output['zi'].values, np.nan)
-    bl = np.nanmax(bl_mask, axis=1)
-    return bl
-    
-
-def compute_bl_rh18(
-        output: xr.Dataset,
-        variable: str = "nuh"
-) -> np.ndarray:
-    bl_mask = np.where(output[variable].values > 1e-6, -output['zi'].values, np.nan)
-    bl = np.nanmax(bl_mask, axis=1)
-    surface_z = -output['z'].values[0,-1]
-    bl = np.where(np.isnan(bl), surface_z, bl)
-    return bl
-
-
-### --- INTERPOLATED BOUNDARY LAYER DEPTH --- ###
+### --- BOUNDARY LAYER DEPTH --- ###
 
 
 # Each definition is a (variable, threshold) pair. The threshold must sit clear of the
@@ -351,55 +318,6 @@ def interp_to_depth(
         np.nan,
         shallow + weight * (deep - shallow)
     )
-
-
-def interp_within_bl(
-        a: np.ndarray,
-        nz_tot: int
-) -> np.ndarray:
-    """Stretch one time step's in-boundary-layer values onto a fixed sigma grid.
-
-    `a` arrives bottom-up with NaN outside the boundary layer, so its valid values run from
-    the layer base up to the surface. Reversing them puts the surface at index 0, i.e. at
-    sigma = 0, and the layer base at sigma = 1. Stretching per time step is what makes sigma
-    relative to the instantaneous boundary layer depth rather than to the deepest layer
-    reached anywhere in the run.
-    """
-    mask = np.isnan(a)
-
-    if mask.all():
-        return np.zeros(nz_tot)
-
-    valid = a[~mask][::-1]
-
-    if valid.shape[0] == 1:
-        return np.ones(nz_tot) * valid
-
-    return np.interp(
-        np.linspace(0, 1, nz_tot), np.linspace(0, 1, valid.shape[0]), valid
-    )
-
-
-def sample_from_bl_grid(
-    output: xr.Dataset,
-    variable: str,
-    depths_to_sample_at: np.ndarray,
-    bl_threshold: float = 1e-9,
-    bl_variable: str = "tke"
-) -> np.ndarray:
-    masked_var = output[variable].where(output[bl_variable] > bl_threshold).T.values
-    cleaned_var = masked_var[~np.isnan(masked_var).all(axis=1)]
-
-    var = np.apply_along_axis(
-        interp_within_bl, axis=0, arr=cleaned_var, nz_tot=cleaned_var.shape[0]
-    )
-
-    # ascending to match interp_within_bl: sigma 0 at the surface, 1 at the layer base
-    sigma_grid = np.linspace(0, 1, var.shape[0])
-    sigma = np.asarray(depths_to_sample_at, dtype=float)
-    indices = np.argmin(np.abs(sigma_grid[:, np.newaxis] - sigma[np.newaxis, :]), axis=0)
-
-    return var[indices, :]
 
 
 def surface_value_z_grid(
