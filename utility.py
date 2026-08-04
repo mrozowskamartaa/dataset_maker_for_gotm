@@ -201,8 +201,8 @@ def rolling_mean_over_inertial_period(
     the first and last `window_size // 2` samples are still computed partly from reflected
     data. That artifact is latitude dependent - the window spans ~2.9 days at 10 degrees
     and ~0.5 days at 90 - so a scalar taken from the tail of this series inherits a
-    latitude dependent bias. For a mean over the end of a run use mean_over_last_days,
-    which needs no padding at all.
+    latitude dependent bias. For a mean over the end of a run use
+    mean_over_last_inertial_periods, which needs no padding at all.
     """
     data = dataset[variable].sel(case=case).values
     window_size = int(calculate_T(case_dict[case]['lat']) / dt)
@@ -214,11 +214,45 @@ def rolling_mean_over_inertial_period(
     )
 
 
+def mean_over_last_inertial_periods(
+        series: np.ndarray,
+        dt: float,
+        latitude: float,
+        n_periods: float = 1.0
+) -> float:
+    """Mean over the last whole inertial period(s), which cancels the inertial oscillation.
+
+    A window of exactly n_periods * T holds a whole number of cycles, so the oscillation
+    integrates to zero however the run happens to end. A window fixed in days does not: at
+    10 degrees one day is 0.35 of a period, and the mean keeps up to 81 percent of the
+    oscillation amplitude depending on the phase the run ended on, against 2 percent at 80
+    degrees. That difference is a function of latitude alone and lands straight on the x
+    axis of the ensemble views.
+
+    The window is rounded to whole samples, so it misses T by up to dt/2 and leaks back a
+    fraction of the amplitude equal to that mismatch - at dt = 1800 s, under 2 percent at
+    every latitude in the run set. Returns NaN when the run is shorter than the window,
+    rather than averaging a fraction of a cycle and calling it a mean.
+    """
+    n_samples = max(int(round(n_periods * calculate_T(latitude) / dt)), 1)
+
+    if n_samples > len(series):
+        return np.nan
+
+    return np.nanmean(series[-n_samples:])
+
+
 def mean_over_last_days(
         series: np.ndarray,
         dt: float,
         n_days: float = 1.0
 ) -> float:
+    """Mean over a window fixed in days, as in RH18.
+
+    Only equivalent to the inertial-period mean where the window covers several periods,
+    which here means the high latitudes. Kept for comparison against the published scaling;
+    use mean_over_last_inertial_periods for anything read across latitude.
+    """
     n_samples = max(int(n_days * 24 * 60 * 60 / dt), 1)
     return np.nanmean(series[-n_samples:])
 

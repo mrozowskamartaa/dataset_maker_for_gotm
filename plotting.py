@@ -13,7 +13,12 @@ from matplotlib import colormaps
 from matplotlib.colors import Normalize
 from scipy.stats import binned_statistic_2d
 
-from utility import calculate_B, calculate_f, compute_u_star, mean_over_last_days
+from utility import (
+    calculate_B,
+    calculate_f,
+    compute_u_star,
+    mean_over_last_inertial_periods
+)
 
 
 GRID = "#e8e8e8"
@@ -28,14 +33,20 @@ Y_LABEL = r"$B$   [m$^2$ s$^{-3}$]"
 def scaling_coordinates(
         case_dict: dict,
         bl_depth,
-        dt: float,
-        n_days: float = 1.0
+        dt,
+        n_periods: float = 1.0
 ) -> tuple[np.ndarray, np.ndarray]:
     """RH18 scaling coordinates per case: mean H f / u_star, and surface buoyancy flux.
 
     `bl_depth` is a (case, time) DataArray, so select a single bl_method before passing it.
-    Mean H is taken directly over the last `n_days` rather than from a centred rolling mean,
-    whose reflected padding would put a latitude dependent artifact straight into the x axis.
+    Mean H comes from the last whole inertial period(s), the only window that cancels the
+    inertial oscillation at every latitude - neither a fixed day count nor the tail of a
+    centred rolling mean does, and both put a latitude dependent artifact on the x axis.
+
+    `dt` is the output interval in seconds: a scalar on the constant grid, or a mapping from
+    case name to dt on the f_u_star grid, where dt is set per case from the inertial period.
+    Cases whose run is shorter than the averaging window come back as NaN and are dropped by
+    both views.
     """
     cases = [str(case) for case in bl_depth.coords['case'].values]
 
@@ -43,8 +54,11 @@ def scaling_coordinates(
 
     for i, case in enumerate(cases):
         specs = case_dict[case]
-        mean_h = mean_over_last_days(
-            bl_depth.sel(case=case).values, dt=dt, n_days=n_days
+        mean_h = mean_over_last_inertial_periods(
+            bl_depth.sel(case=case).values,
+            dt=dt[case] if hasattr(dt, "__getitem__") else dt,
+            latitude=specs['lat'],
+            n_periods=n_periods
         )
         x[i] = mean_h * calculate_f(latitude=specs['lat']) / compute_u_star(tau=specs['tx'])
         y[i] = calculate_B(heat_fluxes=specs['heat_flux'])
