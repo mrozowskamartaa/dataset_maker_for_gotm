@@ -12,7 +12,7 @@ def run_gotm_experiments(
         case_dict: dict,
         depth: int = 400,
         vertical_spacing: float = 1.0
-    ) -> None:
+    ) -> list[str]:
 
     source_file = os.path.join(root_dir, source_dir_name, "gotm.yaml")
     dataset_dir = os.path.join(root_dir, f"{training_set_name}_training_dataset")
@@ -37,6 +37,8 @@ def run_gotm_experiments(
             "t_profile_spacing": vertical_spacing
         }
     )
+
+    failed = []
 
     for case_ in case_dict.items():
 
@@ -73,5 +75,15 @@ def run_gotm_experiments(
                 new_string=string
             )
         
-        os.chdir(case_dir)  # TODO: more sophisticated handling of failed runs? maybe not necessary 
-        subprocess.run(["gotm"])
+        # cwd rather than os.chdir, which left the process inside the last case directory
+        result = subprocess.run(["gotm"], cwd=case_dir)
+
+        if result.returncode != 0:
+            failed.append(case_name)
+
+    # a failed case leaves no output.nc, which otherwise surfaces much later as a confusing
+    # FileNotFoundError from the feature retreiver
+    if failed:
+        print(f"{len(failed)} of {len(case_dict)} cases failed: {', '.join(failed)}")
+
+    return failed

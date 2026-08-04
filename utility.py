@@ -368,7 +368,11 @@ def make_t_profile(
         for date in date_list:
             data_string_list = [f"{z}\t{t}" for z, t in zip(z_levels,t_profile)]
             data_string = "\n".join(data_string_list)
-            file.write(f"{str(date)}\t{depth}\t{2}\n{data_string}\n")
+            # header is date, number of lines that follow, ordering flag. The line count was
+            # `depth`, which is only the same number while vertical_spacing is 1.0 - at 0.1 it
+            # claimed 400 lines of 4000. The flag of 2 is unverified against GOTM's
+            # read_profiles; the runs initialise the right way up, so it is left alone.
+            file.write(f"{str(date)}\t{nz}\t{2}\n{data_string}\n")
 
     return filename
 
