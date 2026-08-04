@@ -36,6 +36,7 @@ class FeatureRetreiver:
 
         self.bl_methods = list(BL_DEFINITIONS.keys()) if bl_methods is None else bl_methods
         self.min_bl_levels = min_bl_levels
+        self.bl_cache = {}
 
         self.training_set_dir = training_set_dir
         self.case_dict = case_dict
@@ -320,8 +321,32 @@ class FeatureRetreiver:
         return attrs
 
 
+    def bl_depths_for(
+            self,
+            case: str,
+            output: xr.Dataset,
+            bl_methods: list[str]
+    ) -> dict[str, np.ndarray]:
+        """Boundary layer depths for one case, computed once and kept.
+
+        Each definition scans the full (time, nlev) profile, and every feature asked for on
+        the sigma coordinate needs the same depths again. Held per case and per set of
+        definitions, so building several variables over one training set pays for the scan
+        once rather than once per variable.
+        """
+        key = (case, tuple(bl_methods))
+
+        if key not in self.bl_cache:
+            self.bl_cache[key] = compute_bl_depths(
+                output=output, methods=bl_methods, min_levels=self.min_bl_levels
+            )
+
+        return self.bl_cache[key]
+
+
     def sample_at_sigma(
             self,
+            case: str,
             output: xr.Dataset,
             variable: str,
             sigma: np.ndarray,
@@ -333,19 +358,23 @@ class FeatureRetreiver:
         that definition's boundary layer depth and the variable is interpolated onto it along
         its own vertical coordinate, so nothing is re-indexed across the staggered grids and
         an unresolved boundary layer propagates as NaN rather than as a plausible number.
+
+        Every definition's depths go into one interp_to_depth call, so the variable's full
+        profile is read and flipped once per case instead of once per definition.
         """
         sigma = np.asarray(sigma, dtype=float)
-        bl_depths = compute_bl_depths(
-            output=output, methods=bl_methods, min_levels=self.min_bl_levels
+        bl_depths = self.bl_depths_for(case=case, output=output, bl_methods=bl_methods)
+
+        depths = np.concatenate(
+            [bl_depths[method][:, np.newaxis] * sigma[np.newaxis, :] for method in bl_methods],
+            axis=1
         )
-        return np.stack([
-            interp_to_depth(
-                output=output,
-                variable=variable,
-                depths=bl_depths[method][:, np.newaxis] * sigma[np.newaxis, :]
-            )
-            for method in bl_methods
-        ])
+        sampled = interp_to_depth(output=output, variable=variable, depths=depths)
+
+        # columns arrive method major, so this unpacks to (time, bl_method, sigma)
+        return np.swapaxes(
+            sampled.reshape(sampled.shape[0], len(bl_methods), sigma.size), 0, 1
+        )
 
 
     def make_bl_depth_dataset(
@@ -365,8 +394,8 @@ class FeatureRetreiver:
 
         for i, case in enumerate(self.case_dict.keys()):
             output = self.get_output(case)
-            bl_depths = compute_bl_depths(
-                output=output, methods=bl_methods, min_levels=self.min_bl_levels
+            bl_depths = self.bl_depths_for(
+                case=case, output=output, bl_methods=bl_methods
             )
             array[i] = self.align_time(
                 np.stack([bl_depths[method] for method in bl_methods], axis=-1)
@@ -409,6 +438,7 @@ class FeatureRetreiver:
         for i, case in enumerate(self.case_dict.keys()):
             output = self.get_output(case)
             sampled = self.sample_at_sigma(
+                case=case,
                 output=output,
                 variable=variable,
                 sigma=sigma_grid,
@@ -450,6 +480,7 @@ class FeatureRetreiver:
         for i, case in enumerate(self.case_dict.keys()):
             output = self.get_output(case)
             sampled = self.sample_at_sigma(
+                case=case,
                 output=output,
                 variable=variable,
                 sigma=[sigma],
@@ -493,6 +524,7 @@ class FeatureRetreiver:
         for i, case in enumerate(self.case_dict.keys()):
             output = self.get_output(case)
             sampled = self.sample_at_sigma(
+                case=case,
                 output=output,
                 variable=variable,
                 sigma=[sigma_above, sigma_below],
