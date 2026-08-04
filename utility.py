@@ -143,7 +143,7 @@ def find_bl_depth(
     and the base, is not, which is why masked-extrema interpolation misbehaves on it.
 
     NaN where the surface level is itself below threshold, and where the layer spans fewer
-    than `min_levels` cells. The full column depth where nothing crosses.
+    than `min_levels` cells. Surface where nothing crosses.
     """
     var = output[variable].values
     z = output[vertical_dim(output[variable])].values
@@ -167,7 +167,7 @@ def find_bl_depth(
     )
 
     bl = z[:, 0] - (z_above + weight * (z_below - z_above))
-    bl[~crosses] = (z[:, 0] - z[:, -1])[~crosses]
+    bl[~crosses] = (z[:, 0])[~crosses]
     bl[crosses & (k < max(min_levels, 1))] = np.nan
 
     return bl

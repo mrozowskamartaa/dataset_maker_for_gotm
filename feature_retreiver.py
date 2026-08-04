@@ -21,7 +21,7 @@ class FeatureRetreiver:
             n_inertial_periods: Optional[int] = None,
             n_points_per_period: Optional[int] = None,
             bl_methods: Optional[list[str]] = None,
-            min_bl_levels: int = 4
+            min_bl_levels: int = 0
     ) -> None:
 
         self.grid = grid
@@ -325,7 +325,7 @@ class FeatureRetreiver:
                 np.stack([bl_depths[method] for method in bl_methods], axis=-1)
             )
 
-        data_vars = {"bl_depth": xr.DataArray(
+        data_vars = {"bl": xr.DataArray(
             array,
             dims=['case', 'time', 'bl_method'],
             coords=coords
