@@ -116,7 +116,8 @@ class FeatureRetreiver:
             output: xr.Dataset
     ) -> np.ndarray:
         dz, dt = self.get_dz(output=output), self.get_dt(output=output)
-        return np.pad(((output['tke'].diff(dim="time") / dt).sum(dim="zi")*dz).values, pad_width=(0,1), mode="edge")
+        rate = (output['tke'].diff(dim="time") / dt).transpose("time", "zi").values
+        return np.pad(np.trapezoid(rate, dx=dz, axis=1), pad_width=(0,1), mode="edge")
     
 
     def compute_buoyancy_mixing_term(
@@ -124,7 +125,10 @@ class FeatureRetreiver:
             output: xr.Dataset
     ) -> np.ndarray:
         dz = self.get_dz(output=output)
-        return ((output['nuh']*output['NN'].where(output['NN'] > 0)).sum(dim="zi")*dz).values
+        # zero, not NaN, outside the stratified part: trapezoid has no skipna and a gap
+        # would swallow the whole profile, where the sum it replaces just stepped over it
+        mixing = output['nuh'] * output['NN'].where(output['NN'] > 0, 0.0)
+        return np.trapezoid(mixing.transpose("time", "zi").values, dx=dz, axis=1)
 
 
     def make_coords_dict(
@@ -191,7 +195,7 @@ class FeatureRetreiver:
             )
 
             dz = self.get_dz(output=output)
-            m_star[i] = self.align_time(np.sum(wb, axis=1) * dz / u_star ** 3)
+            m_star[i] = self.align_time(np.trapezoid(wb, dx=dz, axis=1) / u_star ** 3)
 
         data_vars = {"m_star": xr.DataArray(
             m_star,
@@ -220,7 +224,7 @@ class FeatureRetreiver:
             wb[wb < 0] = 0
 
             dz = self.get_dz(output=output)
-            M[i] = self.align_time(np.sum(wb, axis=1) * dz)
+            M[i] = self.align_time(np.trapezoid(wb, dx=dz, axis=1))
 
         data_vars = {"M": xr.DataArray(
             M,
@@ -249,7 +253,7 @@ class FeatureRetreiver:
             G[G > 0] = 0
 
             dz = self.get_dz(output=output)
-            wb[i] = self.align_time(np.sum(G, axis=1) * dz)
+            wb[i] = self.align_time(np.trapezoid(G, dx=dz, axis=1))
 
         data_vars = {"wb": xr.DataArray(
             wb,
