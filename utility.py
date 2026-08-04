@@ -9,10 +9,12 @@ import xarray as xr
 
 ### --- PHYSICS --- ###
 
+OMEGA = 2 * np.pi / 24 / 60 / 60
+RHO0, G, ALPHA, CP = 1027.0, 9.81, 2e-4, 4e3
+
 
 def calculate_f(latitude: float) -> float:
-    omega = 2 * np.pi / 24 / 60 / 60
-    return 2 * omega * np.sin(latitude * np.pi / 180)
+    return 2 * OMEGA * np.sin(latitude * np.pi / 180)
 
 
 def calculate_T(latitude: float) -> float:
@@ -21,17 +23,17 @@ def calculate_T(latitude: float) -> float:
 
 def calculate_B(
         heat_fluxes: np.ndarray,
-        rho0: float = 1027,
-        cp: float = 4e3,
-        alpha: float = 2e-4,
-        g: float = 9.81 
+        rho0: float = RHO0,
+        cp: float = CP,
+        alpha: float = ALPHA,
+        g: float = G
 ) -> np.ndarray:
     return g * alpha * heat_fluxes / (rho0 * cp)
 
 
 def compute_u_star(
         tau: float,
-        rho: float = 1027
+        rho: float = RHO0
 ) -> float:
     return (tau / rho) ** 0.5
 
@@ -61,12 +63,12 @@ def compute_ekman_layer_thickness(
 
 
 def compute_ekman_spiral(
-        tau: float, 
-        rho: float, 
+        tau: float,
         z: np.ndarray, 
         delta: float, 
         f: float, 
-        nu: float
+        nu: float,
+        rho: float = RHO0
 ) -> tuple[np.ndarray, np.ndarray]:
     u = tau / (rho * np.sqrt(f * nu)) * np.exp(z / delta) * np.cos(-z / delta + np.pi / 4)
     v = tau / (rho * np.sqrt(f * nu)) * np.exp(z / delta) * np.sin(-z / delta + np.pi / 4)
@@ -246,31 +248,6 @@ def roughness(series: np.ndarray) -> float:
     spread = np.std(finite)
 
     return np.std(np.diff(finite, n=2)) / spread if spread > 0 else np.nan
-
-
-def calculate_mean_over_inertial_period(
-        data: np.ndarray,
-        latitudes: np.ndarray,
-        dt: float = 50
-) -> np.ndarray:
-    m, _ = data.shape
-    ten_days = 10 * 24 * 60 * 60  # HARD CODED BABEY; this is the issue with the long runs; should be accounted for
-    averages, variances = np.empty(m), np.empty(m)
-    for i in range(m):
-        if latitudes[i] <= 5:
-            averages[i], variances[i] = np.nanmean(data[i]), np.nanstd(data[i])
-        else:
-            inertial_period = calculate_T(latitude=latitudes[i])
-            n_steps_per_period = int(inertial_period / dt)
-            array = data[i, n_steps_per_period:]  # discard the first inertial period
-            n_chunks = int(ten_days / inertial_period) - 1
-            average, variance = np.empty(n_chunks + 1), np.empty(n_chunks + 1)
-            for j in range(n_chunks):
-                start, end = n_steps_per_period*j, n_steps_per_period*(j+1)
-                average[j], variance[j] = np.nanmean(array[start:end]), np.nanstd(array[start:end]) ** 2
-            average[n_chunks], variance[n_chunks] = np.nanmean(array[end:]), np.nanstd(array[end:]) ** 2
-            averages[i], variances[i] = np.nanmean(average), np.nanmean(variance)
-    return averages, variances
 
 
 def last_profile(

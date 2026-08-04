@@ -5,7 +5,7 @@ import xarray as xr
 import numpy as np
 
 from utility import (
-    BL_DEFINITIONS, compute_ekman_layer_thickness, compute_ekman_spiral,
+    BL_DEFINITIONS, RHO0, compute_ekman_layer_thickness, compute_ekman_spiral,
     calculate_f, compute_bl_depths, compute_u_star, interp_to_depth
 )
 
@@ -40,11 +40,6 @@ class FeatureRetreiver:
 
         self.bl_methods = list(BL_DEFINITIONS.keys()) if bl_methods is None else bl_methods
         self.min_bl_levels = min_bl_levels
-
-        self.alpha = -0.2
-        self.grav = 9.81
-        self.rho0 = 1027
-        self.omega = 2 * np.pi / 24 / 60 / 60
 
         self.training_set_dir = training_set_dir
         self.case_dict = case_dict
@@ -161,7 +156,7 @@ class FeatureRetreiver:
             wb[wb < 0] = 0
             u_star = compute_u_star(
                 tau=self.case_dict[case]['tx'], 
-                rho=self.rho0
+                rho=RHO0
             )
 
             if self.grid == "f_u_star":
@@ -226,22 +221,22 @@ class FeatureRetreiver:
             'time': self.time
         }
 
-        M = np.empty((len(self.case_names), len(self.time)))
+        wb = np.empty((len(self.case_names), len(self.time)))
 
         for i, case in enumerate(self.case_dict.keys()):
             output = self.get_output(case)
-            wb = -output.G.values
-            wb[wb > 0] = 0
+            G = -output.G.values
+            G[G > 0] = 0
 
             if self.grid == "f_u_star":
                 dz = self.get_dz(output=output)
-                M[i] = (np.sum(wb, axis=1) * dz)[:len(self.time)]
+                wb[i] = self.align_time(np.sum(G, axis=1) * dz)
             elif self.grid == "constant":
                 dz = self.dz
-                M[i] = np.sum(wb, axis=1) * dz
+                wb[i] = np.sum(G, axis=1) * dz
 
         data_vars = {"wb": xr.DataArray(
-            M,
+            wb,
             dims=['case', 'time'],
             coords=coords
         )}
@@ -536,16 +531,16 @@ class FeatureRetreiver:
             output = self.get_output(case)
             u_star = compute_u_star(
                 tau=self.case_dict[case]['tx'], 
-                rho=self.rho0
+                rho=RHO0
             )  # TODO: WTF is this tho
-            tau = u_star ** 2 * self.rho0
+            tau = u_star ** 2 * RHO0
             f = calculate_f(latitude=self.case_dict[case]['lat'])
             nu = 0.1
             delta = compute_ekman_layer_thickness(nu=nu, f=f)
             z = output['z'].values[0]
             u_ekman, v_ekman = compute_ekman_spiral(
                 tau=tau, 
-                rho=self.rho0, 
+                rho=RHO0, 
                 z=z, 
                 delta=delta, 
                 f=f, 
