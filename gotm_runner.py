@@ -1,4 +1,5 @@
 import os
+import subprocess
 import shutil
 
 from utility import make_t_profile, edit_yaml
@@ -51,4 +52,4 @@ def run_gotm_experiments(
             )
         
         os.chdir(case_dir)  # TODO: more sophisticated handling of failed runs? maybe not necessary 
-        os.system('gotm')
+        subprocess.run(["gotm"])
