@@ -44,7 +44,18 @@ The source_yaml directory contains GOTM setup file where the desired turbulence 
 
 GOTM runner is available on a regular grid (pre-defined vertical and temporal grid spacing in the source yaml file) or on a _f_ and _u\_star_ grid (the amount of inertial oscillations and depth layers are pre-defined and equal in each case, where total depth and total time elapsed are variable).
 
-Feature retreiver takes the case dictionary and the dataset directory as inputs, as well as the grid settings, and can retreive a range of features from the output files. There are some messy functions here, so use caution when retreiving the features. Definitely could refactor this one...
+The runner also writes `run_settings.json` into the dataset directory, recording dz, dt, depth, nlev and the output averaging it read out of the yaml. Feature retreiver picks that up so those numbers do not have to be retyped; sets made before it existed simply get an empty dict.
+
+Feature retreiver takes the case dictionary and the dataset directory as inputs, as well as the grid settings, and can retreive a range of features from the output files.
+
+Boundary layer features are sampled on a sigma coordinate, where sigma is depth below the surface divided by the boundary layer depth: **0 at the surface, 1 at the layer base**. All three definitions of that depth are computed together and come back on a `bl_method` coordinate (`rh18` from nuh, `eps`, `tke`), because which one is best is decided downstream by the predictor rather than here. Each is interpolated to the sub-grid crossing rather than snapped to a level, and each variable is interpolated along its own vertical coordinate, so centred variables (u, v, temp) and interface variables (nuh, NN, Rig) can be asked for the same physical depth.
+
+- `make_bl_depth_dataset()` - the depths themselves, all definitions at once
+- `make_sigma_profile_dataset(variable, sigma_grid)` - a profile on a sigma grid
+- `make_var_at_bl_dataset(variable, sigma=0.9)` - one variable at one sigma
+- `make_var_across_bl_dataset(variable, sigma_above=0.9, sigma_below=1.1)` - averaged across the base
+
+`plotting.py` puts one scalar per case (a roughness score, a predictor error) on the RH18 scaling coordinates, as a scatter over all cases or binned with its count and spread beside it.
 
 Utility contains all helper functions in one big file as God intended. 
 

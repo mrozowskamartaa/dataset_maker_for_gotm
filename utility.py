@@ -71,8 +71,14 @@ def compute_ekman_spiral(
         nu: float,
         rho: float = RHO0
 ) -> tuple[np.ndarray, np.ndarray]:
-    u = tau / (rho * np.sqrt(f * nu)) * np.exp(z / delta) * np.cos(-z / delta + np.pi / 4)
-    v = tau / (rho * np.sqrt(f * nu)) * np.exp(z / delta) * np.sin(-z / delta + np.pi / 4)
+    # abs(f) keeps the amplitude real south of the equator, where sqrt(f * nu) was NaN. It
+    # does not make the result correct there: the spiral turns the other way in the southern
+    # hemisphere, and that is not modelled here.
+    speed = tau / (rho * np.sqrt(np.abs(f) * nu))
+
+    u = speed * np.exp(z / delta) * np.cos(-z / delta + np.pi / 4)
+    v = speed * np.exp(z / delta) * np.sin(-z / delta + np.pi / 4)
+
     return u, v
 
 
@@ -239,6 +245,11 @@ def roughness(series: np.ndarray) -> float:
 
     Non-finite samples are dropped, so a series with interior gaps scores higher than it
     should; leading NaN from an unresolved boundary layer is harmless.
+
+    Normalising by the series' own spread makes the score comparable within a forcing
+    regime but not across one: a genuinely steady h has a small denominator, so a single
+    grid step in it reads as high roughness next to a case whose h swings freely. Read it
+    for ranking, and read the spread alongside it before comparing across the ensemble.
     """
     finite = np.asarray(series, dtype=float)
     finite = finite[np.isfinite(finite)]
@@ -286,7 +297,9 @@ def interp_to_depth(
     z = output[dim].values[:, ::-1]
     values = array.transpose("time", dim).values[:, ::-1]
 
-    if not np.allclose(z[0], z[-1]):
+    # against every time, not just the last one, which a grid that moves and comes back would
+    # have walked straight through
+    if not np.allclose(z, z[0]):
         raise ValueError("vertical grid varies in time; interpolation assumes it does not")
 
     surface = output['zi'].values[0, -1]

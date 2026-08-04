@@ -25,6 +25,11 @@ class FeatureRetreiver:
             min_bl_levels: int = 0
     ) -> None:
 
+        # the Literal annotation is not enforced, and a typo here otherwise surfaces as an
+        # UnboundLocalError from inside a loop, or as an array left full of np.empty garbage
+        if grid not in ("constant", "f_u_star"):
+            raise ValueError(f"grid must be 'constant' or 'f_u_star', got {grid!r}")
+
         self.grid = grid
 
         if self.grid == "f_u_star":
@@ -55,8 +60,11 @@ class FeatureRetreiver:
                 name="dt", given=dt, from_file=self.get_dt(self.first_case_output)
             )
         elif self.grid == "f_u_star":
+            # samples sit at k * int(T / points_per_period), so in units of the inertial
+            # period they are at k / points_per_period. linspace to the endpoint labelled
+            # the last sample n_inertial_periods, stretching the axis by one sample
             n_points = self.n_inertial_periods * self.n_points_per_period
-            self.time = np.linspace(0, self.n_inertial_periods, n_points)
+            self.time = np.arange(n_points) / self.n_points_per_period
 
             if dz is not None or dt is not None:
                 raise ValueError(
@@ -74,6 +82,23 @@ class FeatureRetreiver:
     ) -> xr.Dataset:
         output_file = os.path.join(self.training_set_dir, case, "output.nc")
         return xr.open_dataset(output_file).isel(lat=0, lon=0)
+
+
+    def each_case(self):
+        """Iterate (index, case, output), closing each output file when done with it.
+
+        get_output opens a netCDF handle per case and nothing used to close it, so a build
+        over a few thousand cases leaked one descriptor each and ran the process out of them
+        partway through. Iterating over case_names rather than case_dict.keys() also keeps
+        the loop order and the case coordinate coming from the same place.
+        """
+        for i, case in enumerate(self.case_names):
+            output = self.get_output(case)
+
+            try:
+                yield i, case, output
+            finally:
+                output.close()
 
 
     def read_run_settings(self) -> dict:
@@ -203,8 +228,7 @@ class FeatureRetreiver:
         
         m_star = np.empty((len(self.case_names), len(self.time)))
 
-        for i, case in enumerate(self.case_dict.keys()):
-            output = self.get_output(case)
+        for i, case, output in self.each_case():
             wb = -output.G.values
             wb[wb < 0] = 0
             u_star = compute_u_star(
@@ -236,8 +260,7 @@ class FeatureRetreiver:
 
         M = np.empty((len(self.case_names), len(self.time)))
 
-        for i, case in enumerate(self.case_dict.keys()):
-            output = self.get_output(case)
+        for i, case, output in self.each_case():
             wb = -output.G.values
             wb[wb < 0] = 0
 
@@ -265,8 +288,7 @@ class FeatureRetreiver:
 
         wb = np.empty((len(self.case_names), len(self.time)))
 
-        for i, case in enumerate(self.case_dict.keys()):
-            output = self.get_output(case)
+        for i, case, output in self.each_case():
             G = -output.G.values
             G[G > 0] = 0
 
@@ -392,8 +414,7 @@ class FeatureRetreiver:
 
         array = np.empty((len(self.case_names), len(self.time), len(bl_methods)))
 
-        for i, case in enumerate(self.case_dict.keys()):
-            output = self.get_output(case)
+        for i, case, output in self.each_case():
             bl_depths = self.bl_depths_for(
                 case=case, output=output, bl_methods=bl_methods
             )
@@ -435,8 +456,7 @@ class FeatureRetreiver:
             (len(self.case_names), len(self.time), len(sigma_grid), len(bl_methods))
         )
 
-        for i, case in enumerate(self.case_dict.keys()):
-            output = self.get_output(case)
+        for i, case, output in self.each_case():
             sampled = self.sample_at_sigma(
                 case=case,
                 output=output,
@@ -477,8 +497,7 @@ class FeatureRetreiver:
 
         array = np.empty((len(self.case_names), len(self.time), len(bl_methods)))
 
-        for i, case in enumerate(self.case_dict.keys()):
-            output = self.get_output(case)
+        for i, case, output in self.each_case():
             sampled = self.sample_at_sigma(
                 case=case,
                 output=output,
@@ -521,8 +540,7 @@ class FeatureRetreiver:
 
         array = np.empty((len(self.case_names), len(self.time), len(bl_methods)))
 
-        for i, case in enumerate(self.case_dict.keys()):
-            output = self.get_output(case)
+        for i, case, output in self.each_case():
             sampled = self.sample_at_sigma(
                 case=case,
                 output=output,
@@ -554,8 +572,7 @@ class FeatureRetreiver:
         
         buoyancy_mixing_term = np.empty((len(self.case_names), len(self.time)))
 
-        for i, case in enumerate(self.case_dict.keys()):
-            output = self.get_output(case)
+        for i, case, output in self.each_case():
             buoyancy_mixing_term[i] = self.align_time(
                 self.compute_buoyancy_mixing_term(output=output)
             )
@@ -581,8 +598,7 @@ class FeatureRetreiver:
         
         storage_term = np.empty((len(self.case_names), len(self.time)))
 
-        for i, case in enumerate(self.case_dict.keys()):
-            output = self.get_output(case)
+        for i, case, output in self.each_case():
             storage_term[i] = self.align_time(self.compute_storage_term(output=output))
         
         data_vars = {"storage_term": xr.DataArray(
@@ -607,13 +623,8 @@ class FeatureRetreiver:
         u_i = np.empty((len(self.case_names), len(self.time)))
         v_i = np.empty((len(self.case_names), len(self.time)))
 
-        for i, case in enumerate(self.case_dict.keys()):
-            output = self.get_output(case)
-            u_star = compute_u_star(
-                tau=self.case_dict[case]['tx'], 
-                rho=RHO0
-            )  # TODO: WTF is this tho
-            tau = u_star ** 2 * RHO0
+        for i, case, output in self.each_case():
+            tau = self.case_dict[case]['tx']
             f = calculate_f(latitude=self.case_dict[case]['lat'])
             nu = 0.1
             delta = compute_ekman_layer_thickness(nu=nu, f=f)
@@ -673,8 +684,7 @@ class FeatureRetreiver:
 
         array = np.empty((len(self.case_names),) + test_array.shape)
 
-        for i, case in enumerate(self.case_dict.keys()):
-            output = self.get_output(case)
+        for i, case, output in self.each_case():
             if "time" in coordinates and self.grid == "f_u_star":
                 array[i] = processing_method(
                 output=output, 
@@ -719,8 +729,7 @@ class FeatureRetreiver:
 
         array = np.empty((len(self.case_names),) + shape)
 
-        for i, case in enumerate(self.case_dict.keys()):
-            output = self.get_output(case)
+        for i, case, output in self.each_case():
             if "time" in coordinates and self.grid == "f_u_star":
                 array[i] = output[variable].values[:len(self.time)]
             else:                
