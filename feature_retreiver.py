@@ -75,7 +75,7 @@ class FeatureRetreiver:
             output: xr.Dataset
     ) -> float:
         delta = output.time[1].values - output.time[0].values
-        return delta.total_seconds()
+        return delta / np.timedelta64(1, "s")
 
 
     def compute_storage_term(
@@ -124,13 +124,17 @@ class FeatureRetreiver:
     ) -> dict:
         
         coords_dict = {}
-        
+
         for coord in coords:
             if 'z' in coord:
-                nz = self.first_case_output[coord].isel(time=0).values
-                coords_dict[coord] = np.arange(nz)
+                # total depth varies per case on this grid, so the only vertical coordinate
+                # the cases share is the level index
+                levels = self.first_case_output[coord].isel(time=0).values
+                coords_dict[coord] = np.arange(levels.size)
             elif 'time' in coord:
                 coords_dict[coord] = self.time
+            else:
+                coords_dict[coord] = self.first_case_output[coord].values
 
         coords_dict['case'] = self.case_names
 

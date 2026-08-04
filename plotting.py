@@ -205,7 +205,19 @@ def binned_cases(
     values = np.asarray(values, dtype=float)
 
     keep = np.isfinite(x) & np.isfinite(y) & np.isfinite(values)
+
+    if log_x:
+        # a log axis has no room for a case whose mean h came out at zero, and geomspace
+        # refuses a zero endpoint outright rather than quietly rescaling
+        dropped = int(np.sum(keep & ~(x > 0)))
+        if dropped:
+            print(f"binned_cases: dropped {dropped} case(s) with non-positive x")
+        keep &= x > 0
+
     x, y, values = x[keep], y[keep], values[keep]
+
+    if x.size == 0:
+        raise ValueError("no cases left to bin; every point was non-finite or off the axis")
 
     if y_edges is None:
         y_edges = discrete_bin_edges(values=y)
