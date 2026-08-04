@@ -26,15 +26,10 @@ class FeatureRetreiver:
 
         self.grid = grid
 
-        if self.grid == "constant":
-            assert dz is not None, "dz must be provided for constant grid"
-            assert dt is not None, "dt must be provided for constant grid"
-        elif self.grid == "f_u_star":
+        if self.grid == "f_u_star":
             assert n_inertial_periods is not None, "n_inertial_periods must be provided for f_u_star grid"
             assert n_points_per_period is not None, "n_points_per_period must be provided for f_u_star grid"
 
-        self.dz = dz
-        self.dt = dt
         self.n_inertial_periods = n_inertial_periods
         self.n_points_per_period = n_points_per_period
 
@@ -50,9 +45,24 @@ class FeatureRetreiver:
 
         if self.grid == "constant":
             self.time = self.first_case_output['time'].values
+            self.dz = self.checked_spacing(
+                name="dz", given=dz, from_file=self.get_dz(self.first_case_output)
+            )
+            self.dt = self.checked_spacing(
+                name="dt", given=dt, from_file=self.get_dt(self.first_case_output)
+            )
         elif self.grid == "f_u_star":
             n_points = self.n_inertial_periods * self.n_points_per_period
             self.time = np.linspace(0, self.n_inertial_periods, n_points)
+
+            if dz is not None or dt is not None:
+                raise ValueError(
+                    "dz and dt are set per case from the inertial period on the f_u_star "
+                    "grid, so there is no single value to pass; read them per case with "
+                    "get_dz and get_dt"
+                )
+
+            self.dz, self.dt = None, None
 
 
     def get_output(
@@ -78,14 +88,34 @@ class FeatureRetreiver:
         return delta / np.timedelta64(1, "s")
 
 
+    def checked_spacing(
+            self,
+            name: str,
+            given: Optional[float],
+            from_file: float
+    ) -> float:
+        """Take the grid spacing from the output file, refusing an argument that contradicts it.
+
+        A dz that disagrees with the run scales every depth integral - m_star, M, wb and both
+        flux terms - by the ratio between them, and nothing else about the result looks wrong.
+        A yaml of nlev 4000 over depth 400 is dz 0.1, so a hand-passed dz of 1 is a factor of
+        ten sitting in the training data. The file knows; the argument is only kept so a
+        mismatch can be caught here rather than in a fit.
+        """
+        if given is not None and not np.isclose(given, from_file):
+            raise ValueError(
+                f"{name}={given} was passed, but the output file says {name}={from_file}. "
+                f"The file wins: drop the argument, or point at the training set you meant."
+            )
+
+        return from_file
+
+
     def compute_storage_term(
             self,
             output: xr.Dataset
     ) -> np.ndarray:
-        if self.grid == "f_u_star":
-            dz, dt = self.get_dz(output=output), self.get_dt(output=output)
-        elif self.grid == "constant":
-            dz, dt = self.dz, self.dt
+        dz, dt = self.get_dz(output=output), self.get_dt(output=output)
         return np.pad(((output['tke'].diff(dim="time") / dt).sum(dim="zi")*dz).values, pad_width=(0,1), mode="edge")
     
 
@@ -93,10 +123,7 @@ class FeatureRetreiver:
             self,
             output: xr.Dataset
     ) -> np.ndarray:
-        if self.grid == "f_u_star":
-            dz = self.get_dz(output=output)
-        elif self.grid == "constant":
-            dz = self.dz
+        dz = self.get_dz(output=output)
         return ((output['nuh']*output['NN'].where(output['NN'] > 0)).sum(dim="zi")*dz).values
 
 
@@ -163,16 +190,9 @@ class FeatureRetreiver:
                 rho=RHO0
             )
 
-            if self.grid == "f_u_star":
-                dz = self.get_dz(output=output)
-                m_star[i] = (np.sum(wb, axis=1) * dz / u_star ** 3)[:len(self.time)]
-            elif self.grid == "constant":
-                dz = self.dz
-                m_star[i] = np.sum(wb, axis=1) * dz / u_star ** 3
+            dz = self.get_dz(output=output)
+            m_star[i] = self.align_time(np.sum(wb, axis=1) * dz / u_star ** 3)
 
-        if self.grid == "f_u_star":
-            m_star = m_star[:,:len(self.time)]
-        
         data_vars = {"m_star": xr.DataArray(
             m_star,
             dims=['case', 'time'],
@@ -199,12 +219,8 @@ class FeatureRetreiver:
             wb = -output.G.values
             wb[wb < 0] = 0
 
-            if self.grid == "f_u_star":
-                dz = self.get_dz(output=output)
-                M[i] = (np.sum(wb, axis=1) * dz)[:len(self.time)]
-            elif self.grid == "constant":
-                dz = self.dz
-                M[i] = np.sum(wb, axis=1) * dz
+            dz = self.get_dz(output=output)
+            M[i] = self.align_time(np.sum(wb, axis=1) * dz)
 
         data_vars = {"M": xr.DataArray(
             M,
@@ -232,12 +248,8 @@ class FeatureRetreiver:
             G = -output.G.values
             G[G > 0] = 0
 
-            if self.grid == "f_u_star":
-                dz = self.get_dz(output=output)
-                wb[i] = self.align_time(np.sum(G, axis=1) * dz)
-            elif self.grid == "constant":
-                dz = self.dz
-                wb[i] = np.sum(G, axis=1) * dz
+            dz = self.get_dz(output=output)
+            wb[i] = self.align_time(np.sum(G, axis=1) * dz)
 
         data_vars = {"wb": xr.DataArray(
             wb,
@@ -476,10 +488,9 @@ class FeatureRetreiver:
 
         for i, case in enumerate(self.case_dict.keys()):
             output = self.get_output(case)
-            if self.grid == "f_u_star":
-                buoyancy_mixing_term[i] = self.compute_buoyancy_mixing_term(output=output)[:len(self.time)]
-            elif self.grid == "constant":
-                buoyancy_mixing_term[i] = self.compute_buoyancy_mixing_term(output=output)
+            buoyancy_mixing_term[i] = self.align_time(
+                self.compute_buoyancy_mixing_term(output=output)
+            )
         
         data_vars = {"buoyancy_mixing_term": xr.DataArray(
             buoyancy_mixing_term,
@@ -504,10 +515,7 @@ class FeatureRetreiver:
 
         for i, case in enumerate(self.case_dict.keys()):
             output = self.get_output(case)
-            if self.grid == "f_u_star":
-                storage_term[i] = self.compute_storage_term(output=output)[:len(self.time)]
-            elif self.grid == "constant":
-                storage_term[i] = self.compute_storage_term(output=output)
+            storage_term[i] = self.align_time(self.compute_storage_term(output=output))
         
         data_vars = {"storage_term": xr.DataArray(
             storage_term,
