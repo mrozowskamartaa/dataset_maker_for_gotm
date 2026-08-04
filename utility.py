@@ -269,8 +269,14 @@ def interp_to_depth(
 
     Interpolates along the variable's own vertical coordinate, so centred variables (u, v,
     temp) and interface variables (nuh, NN, Rig) can be sampled at the same physical depth
-    without either being re-indexed onto the other's staggered grid. NaN outside the water
-    column, and wherever `depths` is NaN.
+    without either being re-indexed onto the other's staggered grid. Depth is measured from
+    the free surface for both, not from each coordinate's own first value - the top
+    interface is the surface but the top cell centre sits dz/2 below it, so taking each
+    coordinate's own origin would return centred variables from half a cell too deep.
+
+    NaN outside the water column and wherever `depths` is NaN. For centred variables that
+    now includes depths shallower than the first cell centre, which cannot be reached
+    without extrapolating; interface variables still reach the surface exactly.
     """
     array = output[variable]
     dim = vertical_dim(array)
@@ -282,7 +288,8 @@ def interp_to_depth(
     if not np.allclose(z[0], z[-1]):
         raise ValueError("vertical grid varies in time; interpolation assumes it does not")
 
-    grid = z[0, 0] - z[0]
+    surface = output['zi'].values[0, -1]
+    grid = surface - z[0]
 
     index = np.clip(np.searchsorted(grid, depths), 1, grid.size - 1)
     weight = (depths - grid[index - 1]) / (grid[index] - grid[index - 1])
