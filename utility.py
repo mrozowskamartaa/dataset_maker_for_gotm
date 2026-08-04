@@ -1,5 +1,6 @@
 import re
 import os
+import json
 from datetime import datetime, timedelta
 
 
@@ -370,6 +371,49 @@ def make_t_profile(
             file.write(f"{str(date)}\t{depth}\t{2}\n{data_string}\n")
 
     return filename
+
+
+def read_yaml_setting(
+        file: str,
+        key: str
+) -> str:
+    """First value for `key` in a GOTM yaml, as a string with the trailing comment stripped.
+
+    A line reader rather than a yaml dependency, to match edit_yaml, which also works on the
+    file as lines so that GOTM's own comments survive a round trip. Every key this is used
+    with appears exactly once in the source yaml; a key that appears twice would silently
+    return the first.
+    """
+    pattern = re.compile(rf'^\s*{re.escape(key)}:\s*(?P<value>[^#\n]*)')
+
+    with open(file, 'r') as f:
+        for line in f:
+            match = pattern.match(line)
+
+            if match:
+                return match.group('value').strip()
+
+    return None
+
+
+def write_run_settings(
+        dataset_dir: str,
+        settings: dict
+) -> str:
+    """Record how a training set was run, beside the cases it produced.
+
+    Everything here otherwise has to be retyped into FeatureRetreiver and into the plotting
+    coordinates, where a wrong dz silently rescales every depth integral and a wrong dt
+    silently shifts the averaging window. Written once per set so it cannot drift from the
+    runs it describes.
+    """
+    os.makedirs(dataset_dir, exist_ok=True)
+    path = os.path.join(dataset_dir, "run_settings.json")
+
+    with open(path, "w") as file:
+        json.dump(settings, file, indent=2)
+
+    return path
 
 
 def edit_yaml(

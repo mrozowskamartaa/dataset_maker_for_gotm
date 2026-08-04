@@ -1,5 +1,6 @@
 from typing import Callable, Literal, Optional
 import os
+import json
 
 import xarray as xr
 import numpy as np
@@ -42,6 +43,7 @@ class FeatureRetreiver:
 
         first_case = self.case_names[0]
         self.first_case_output = self.get_output(first_case)
+        self.run_settings = self.read_run_settings()
 
         if self.grid == "constant":
             self.time = self.first_case_output['time'].values
@@ -71,6 +73,21 @@ class FeatureRetreiver:
     ) -> xr.Dataset:
         output_file = os.path.join(self.training_set_dir, case, "output.nc")
         return xr.open_dataset(output_file).isel(lat=0, lon=0)
+
+
+    def read_run_settings(self) -> dict:
+        """How this training set was run, as recorded by the runner.
+
+        Empty for sets generated before the runner wrote it, which is why nothing here is
+        depended on: it annotates the output rather than driving it.
+        """
+        path = os.path.join(self.training_set_dir, "run_settings.json")
+
+        if not os.path.exists(path):
+            return {}
+
+        with open(path, "r") as file:
+            return json.load(file)
 
 
     def get_dz(
@@ -278,7 +295,8 @@ class FeatureRetreiver:
             self,
             bl_methods: list[str]
     ) -> dict:
-        return {
+
+        attrs = {
             "sigma_convention": "depth below surface / boundary layer depth; 0 at the surface, 1 at the boundary layer base",
             "bl_definitions": "; ".join(
                 f"{method}: {BL_DEFINITIONS[method]['variable']} < {BL_DEFINITIONS[method]['threshold']:g}"
@@ -286,6 +304,20 @@ class FeatureRetreiver:
             ),
             "min_bl_levels": self.min_bl_levels
         }
+
+        method = self.run_settings.get("output_time_method")
+
+        if method == "mean":
+            # there is already a filter in the chain, upstream of anything done here: h is
+            # the depth of an averaged profile, which is not the average of the depths
+            attrs["output_averaging"] = (
+                f"profiles are means over {self.run_settings.get('dt')} "
+                f"{self.run_settings.get('output_time_unit')}s of a "
+                f"{self.run_settings.get('model_dt')} s model step, so a boundary layer "
+                f"depth is the depth of a time averaged profile, not a time average of depths"
+            )
+
+        return attrs
 
 
     def sample_at_sigma(

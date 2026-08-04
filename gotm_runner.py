@@ -2,11 +2,11 @@ import os
 import subprocess
 import shutil
 
-from utility import make_t_profile, edit_yaml
+from utility import make_t_profile, edit_yaml, read_yaml_setting, write_run_settings
 
 
 def run_gotm_experiments(
-        root_dir: str, 
+        root_dir: str,
         source_dir_name: str,
         training_set_name: str,
         case_dict: dict,
@@ -15,11 +15,33 @@ def run_gotm_experiments(
     ) -> None:
 
     source_file = os.path.join(root_dir, source_dir_name, "gotm.yaml")
+    dataset_dir = os.path.join(root_dir, f"{training_set_name}_training_dataset")
+
+    nlev = int(read_yaml_setting(file=source_file, key="nlev"))
+    model_depth = float(read_yaml_setting(file=source_file, key="depth"))
+
+    write_run_settings(
+        dataset_dir=dataset_dir,
+        settings={
+            "grid": "constant",
+            "depth": model_depth,
+            "nlev": nlev,
+            "dz": model_depth / nlev,
+            "dt": float(read_yaml_setting(file=source_file, key="time_step")),
+            "model_dt": float(read_yaml_setting(file=source_file, key="dt")),
+            "output_time_unit": read_yaml_setting(file=source_file, key="time_unit"),
+            "output_time_method": read_yaml_setting(file=source_file, key="time_method"),
+            "start": read_yaml_setting(file=source_file, key="start"),
+            "stop": read_yaml_setting(file=source_file, key="stop"),
+            "t_profile_depth": depth,
+            "t_profile_spacing": vertical_spacing
+        }
+    )
 
     for case_ in case_dict.items():
 
         case_name, case_specs = case_
-        case_dir = os.path.join(root_dir, f"{training_set_name}_training_dataset", case_name)
+        case_dir = os.path.join(dataset_dir, case_name)
         os.makedirs(case_dir, exist_ok=True)
         shutil.copy(source_file, case_dir)
         case_file = os.path.join(case_dir, "gotm.yaml")

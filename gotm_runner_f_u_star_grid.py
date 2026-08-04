@@ -3,7 +3,10 @@ import subprocess
 import shutil
 
 from datetime import datetime, timedelta
-from utility import calculate_T, make_t_profile, edit_yaml, compute_u_star, calculate_f
+from utility import (
+    calculate_T, make_t_profile, edit_yaml, compute_u_star, calculate_f,
+    read_yaml_setting, write_run_settings
+)
 
 
 # The difference between this script and gotm_runner.py is that the vertical and temporal 
@@ -24,19 +27,40 @@ def get_time(
 
 
 def run_gotm_experiments(
-        root_dir: str, 
+        root_dir: str,
         source_dir_name: str,
         training_set_name: str,
         case_dict: dict,
-        nlev: int = 10000
+        nlev: int = 10000,
+        n_inertial_periods: int = 20,
+        points_per_inertial_period: int = 24
     ) -> None:
 
     source_file = os.path.join(root_dir, source_dir_name, "gotm.yaml")
+    dataset_dir = os.path.join(root_dir, f"{training_set_name}_training_dataset")
+
+    write_run_settings(
+        dataset_dir=dataset_dir,
+        settings={
+            "grid": "f_u_star",
+            "nlev": nlev,
+            "n_inertial_periods": n_inertial_periods,
+            "points_per_inertial_period": points_per_inertial_period,
+            "model_dt": float(read_yaml_setting(file=source_file, key="dt")),
+            "output_time_unit": read_yaml_setting(file=source_file, key="time_unit"),
+            "output_time_method": read_yaml_setting(file=source_file, key="time_method"),
+            # depth is u_star / f and the output interval is T / points_per_inertial_period,
+            # so both are per case; read them from each output file rather than from here
+            "depth": "per case",
+            "dz": "per case",
+            "dt": "per case"
+        }
+    )
 
     for case_ in case_dict.items():
 
         case_name, case_specs = case_
-        case_dir = os.path.join(root_dir, f"{training_set_name}_training_dataset", case_name)
+        case_dir = os.path.join(dataset_dir, case_name)
         os.makedirs(case_dir, exist_ok=True)
         shutil.copy(source_file, case_dir)
         case_file = os.path.join(case_dir, "gotm.yaml")
@@ -46,7 +70,11 @@ def run_gotm_experiments(
         u_star = compute_u_star(tau=case_specs['tx'])
 
         max_depth = int(u_star / f)
-        stop_date, time_step = get_time(T=T)
+        stop_date, time_step = get_time(
+            T=T,
+            n_inertial_periods=n_inertial_periods,
+            points_per_inertial_period=points_per_inertial_period
+        )
 
         t_profile_pattern = r'^(?P<indent>\s*)file:\s+t_prof.dat'
         t_profile_file = make_t_profile(
