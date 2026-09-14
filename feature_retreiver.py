@@ -7,7 +7,8 @@ import numpy as np
 
 from utility import (
     BL_DEFINITIONS, RHO0, compute_ekman_layer_thickness, compute_ekman_spiral,
-    calculate_f, compute_bl_depths, compute_u_star, interp_to_depth
+    calculate_f, compute_bl_depths, compute_u_star, interp_to_depth,
+    vertical_dim
 )
 
 
@@ -423,6 +424,48 @@ class FeatureRetreiver:
             )
 
         data_vars = {"bl": xr.DataArray(
+            array,
+            dims=['case', 'time', 'bl_method'],
+            coords=coords
+        )}
+
+        return xr.Dataset(
+            data_vars=data_vars,
+            coords=coords,
+            attrs=self.bl_attrs(bl_methods=bl_methods)
+        )
+
+
+    def make_bulk_bl_dataset(
+            self,
+            variable: str,
+            bl_methods: Optional[list[str]] = None
+    ) -> xr.Dataset:
+
+        bl_methods = self.bl_methods if bl_methods is None else bl_methods
+
+        coords = {
+            'case': self.case_names,
+            'time': self.time,
+            'bl_method': bl_methods
+        }
+
+        array = np.empty((len(self.case_names), len(self.time), len(bl_methods)))
+
+        for i, case, output in self.each_case():
+            bl_depths = self.bl_depths_for(
+                case=case, output=output, bl_methods=bl_methods
+            )
+            profile = output[variable].T
+            z = vertical_dim(profile)
+            for j, method in enumerate(bl_methods):
+                criterion_1 = profile[z] > -bl_depths[method]
+                criterion_2 = profile[z] < -bl_depths[method]/2
+                array[i, :, j] = self.align_time(
+                    profile.where(criterion_1).where(criterion_2).sum(dim=z, skipna=True).values
+                    )
+
+        data_vars = {variable: xr.DataArray(
             array,
             dims=['case', 'time', 'bl_method'],
             coords=coords
