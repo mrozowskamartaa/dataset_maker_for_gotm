@@ -8,6 +8,19 @@ import numpy as np
 import xarray as xr
 
 
+### --- JUST FOR FUN --- ###
+
+def linlogspace(
+        start: int,
+        end: int,
+        numlin: int,
+        base: float
+):
+    assert start < end, ""
+    arrays = [np.linspace(base**i, base**(i+1), numlin) for i in range(start, end)]
+    return np.stack(np.unique(arrays)).flatten()
+
+
 ### --- PHYSICS --- ###
 
 OMEGA = 2 * np.pi / 24 / 60 / 60
