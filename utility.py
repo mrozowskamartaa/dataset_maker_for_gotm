@@ -25,6 +25,7 @@ def linlogspace(
 
 OMEGA = 2 * np.pi / 24 / 60 / 60
 RHO0, G, ALPHA, CP = 1027.0, 9.81, 2e-4, 4e3
+K = 0.4
 
 
 def calculate_f(latitude: float) -> float:

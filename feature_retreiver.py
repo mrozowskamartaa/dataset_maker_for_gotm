@@ -6,7 +6,7 @@ import xarray as xr
 import numpy as np
 
 from utility import (
-    BL_DEFINITIONS, RHO0, compute_ekman_layer_thickness, compute_ekman_spiral,
+    BL_DEFINITIONS, RHO0, K, compute_ekman_layer_thickness, compute_ekman_spiral,
     calculate_f, compute_bl_depths, compute_u_star, interp_to_depth,
     vertical_dim
 )
@@ -270,6 +270,38 @@ class FeatureRetreiver:
 
         data_vars = {"M": xr.DataArray(
             M,
+            dims=['case', 'time'],
+            coords=coords
+        )}
+
+        return xr.Dataset(
+            data_vars=data_vars,
+            coords=coords
+        )
+
+
+    def make_SS_R_dataset(self) -> xr.Dataset:
+
+        coords = {
+            'case': self.case_names,
+            'time': self.time
+        }
+
+        SS_R = np.empty((len(self.case_names), len(self.time)))
+
+        for i, case, output in self.each_case():
+            u_star = compute_u_star(
+                            tau=self.case_dict[case]['tx'], 
+                            rho=RHO0
+                        )
+            dz = self.get_dz(output=output)
+            SS = output.SS[:,:-1]
+            SS_LoW = (u_star/(K*output.zi[:,:-1]))**2
+            num = output.num[:,:-1]
+            SS_R[i] = self.align_time(np.trapezoid(num*(SS-SS_LoW), dx=dz, axis=1))
+
+        data_vars = {"SS_R": xr.DataArray(
+            SS_R,
             dims=['case', 'time'],
             coords=coords
         )}
@@ -570,6 +602,7 @@ class FeatureRetreiver:
         variable: str,
         sigma_above: float = 0.9,
         sigma_below: float = 1.1,
+        method: Literal['difference', 'mean'] = 'mean',
         bl_methods: Optional[list[str]] = None
     ) -> xr.Dataset:
 
@@ -591,7 +624,11 @@ class FeatureRetreiver:
                 sigma=[sigma_above, sigma_below],
                 bl_methods=bl_methods
             )
-            array[i] = self.align_time(sampled.mean(axis=-1).T)
+
+            if method == 'mean':
+                array[i] = self.align_time(sampled.mean(axis=-1).T)
+            elif method == 'diff':
+                array[i] = self.align_time(np.diff(sampled, axis=-1).T)
 
         data_vars = {f"{variable}_bl_mean": xr.DataArray(
             array,
