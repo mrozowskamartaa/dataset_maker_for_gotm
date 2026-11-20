@@ -53,6 +53,58 @@ def compute_u_star(
     return (tau / rho) ** 0.5
 
 
+SECONDS_PER_DAY = 24 * 60 * 60
+NONROT_DEEPENING_COEFFICIENT = 1.2
+
+
+def compute_N0(
+        temp_grad: float,
+        g: float = G,
+        alpha: float = ALPHA
+) -> float:
+    """Initial buoyancy frequency [1/s] of the linear temperature profile, N0^2 = dT/dz g alpha."""
+    if temp_grad <= 0:
+        raise ValueError(f"temp_grad must be positive to define N0, got {temp_grad}")
+
+    return (temp_grad * g * alpha) ** 0.5
+
+
+def compute_nonrot_mixed_layer_depth(
+        u_star: float,
+        N0: float,
+        t: float
+) -> float:
+    """Wind-driven mixed layer depth [m] without rotation, D(t) = 1.2 u_star (t / N0)^(1/2), t in s."""
+    return NONROT_DEEPENING_COEFFICIENT * u_star * (t / N0) ** 0.5
+
+
+def compute_nonrot_end_time(
+        end_depth_ratio: float = None,
+        end_time_days: float = None
+) -> float:
+    """End time [s] of a non-rotating run, from exactly one of the two ways of setting it.
+
+    `end_depth_ratio` is D(t_end) / D(1 day). Since D grows as t^(1/2), it fixes the end
+    time on its own, independent of u_star and N0: t_end = end_depth_ratio^2 days. The two
+    options are therefore the same knob in different units; the ratio is the one that
+    reads in terms of how far the layer has deepened.
+    """
+    if (end_depth_ratio is None) == (end_time_days is None):
+        raise ValueError(
+            "set exactly one of nonrot_end_depth_ratio and nonrot_end_time_days for f = 0 cases"
+        )
+
+    if end_time_days is None:
+        if end_depth_ratio <= 0:
+            raise ValueError(f"nonrot_end_depth_ratio must be positive, got {end_depth_ratio}")
+        end_time_days = end_depth_ratio ** 2
+
+    if end_time_days <= 0:
+        raise ValueError(f"nonrot_end_time_days must be positive, got {end_time_days}")
+
+    return end_time_days * SECONDS_PER_DAY
+
+
 def calculate_analytical_m_star_N(
         x: np.ndarray, 
         c_N1: float, 
@@ -362,27 +414,51 @@ def generate_time_range(
         current_date += timedelta(days=delta)
 
 
+def whole_levels(
+        name: str,
+        length: float,
+        spacing: float
+) -> int:
+    """Number of `spacing` cells in `length`, refusing a length that is not a whole multiple."""
+    levels = int(round(length / spacing))
+
+    if not np.isclose(levels * spacing, length):
+        raise ValueError(
+            f"{name}={length} m is not a whole multiple of vertical_spacing={spacing} m"
+        )
+
+    return levels
+
+
 def make_t_profile(
         case_dir: str,
-        depth: int,
-        mld: int,
+        depth: float,
+        mld: float,
         temp_grad: float = 0.04,
         mld_temp: float = 29.25,
         vertical_spacing: float = 1.0
 ) -> str:
-    
-    nz = int(depth / vertical_spacing)
-    mld_index = int(mld / vertical_spacing)
-    mid_nz = vertical_spacing / 2
+    """Write the initial temperature profile, surface first, at cell centres of `vertical_spacing`.
+
+    `depth` and `mld` must be whole multiples of `vertical_spacing`. Otherwise int() truncated
+    the level count while np.arange rounded the other way, so the z levels outnumbered the
+    temperatures, the top level landed above the surface, and the profile was shifted.
+    """
+    nz = whole_levels(name="depth", length=depth, spacing=vertical_spacing)
+    mld_index = whole_levels(name="mld", length=mld, spacing=vertical_spacing)
+
+    if mld_index > nz:
+        raise ValueError(f"mld {mld} m is deeper than the profile depth {depth} m")
+
     temp_grad_per_nz = temp_grad * vertical_spacing
 
     t_profile = np.empty(nz)
     t_profile[0:mld_index] = mld_temp
     t_profile[mld_index:] = mld_temp - temp_grad_per_nz*np.arange(1,nz-mld_index+1,1)
 
-    z_start = - depth + mid_nz
-    z_end = mid_nz
-    z_levels = np.arange(z_start,z_end,vertical_spacing)[::-1]
+    # built from the level index rather than np.arange over floats, so there are exactly nz
+    # levels and the first sits half a cell below the surface
+    z_levels = -(np.arange(nz) + 0.5) * vertical_spacing
 
     date_start = datetime(2011, 4, 1)
     date_end = datetime(2012, 5, 1)
@@ -452,23 +528,35 @@ def edit_yaml(
         pattern: str,
         new_string: str
 ) -> None:
-    
+    """Replace the one line matching `pattern`, keeping its indent.
+
+    Raises unless exactly one line matches. A pattern that matched nothing used to leave the
+    template value in place (latitude 27.836, say) and the case ran anyway; one that matched
+    several lines rewrote all of them.
+    """
     with open(file, 'r') as f:
         lines = f.readlines()
 
     new_lines = []
     line_to_edit = re.compile(pattern)
+    n_matches = 0
 
     for line in lines:
         match = line_to_edit.match(line)
 
         if match:
+            n_matches += 1
             indent = match.group('indent')
             new_line = (f"{indent}{new_string}\n")
             new_lines.append(new_line)
             continue
-    
+
         new_lines.append(line)
+
+    if n_matches != 1:
+        raise ValueError(
+            f"pattern {pattern!r} matched {n_matches} lines in {file}, expected exactly 1"
+        )
 
     with open(file, 'w') as f:
         f.writelines(new_lines)

@@ -44,6 +44,8 @@ The source_yaml directory contains GOTM setup file where the desired turbulence 
 
 GOTM runner is available on a regular grid (pre-defined vertical and temporal grid spacing in the source yaml file) or on a _f_ and _u\_star_ grid (the amount of inertial oscillations and depth layers are pre-defined and equal in each case, where total depth and total time elapsed are variable).
 
+At f = 0 (latitude 0) there is no Ekman depth or inertial period, so the f_u_star runner scales those cases by the non-rotating deepening law D(t) = 1.2 u_star (t / N0)^(1/2), with N0^2 = temp_grad g alpha. Set exactly one of `nonrot_end_depth_ratio` (D(t_end) / D(1 day); since D grows as t^(1/2), the run then lasts that ratio squared in days) or `nonrot_end_time_days`. The domain is 2 D(t_end) deep, and the run keeps the same number of output samples as the rotating cases, spread over t_end. Each case's depth and time scale are written to `case_scales` in `run_settings.json`.
+
 The runner also writes `run_settings.json` into the dataset directory, recording dz, dt, depth, nlev and the output averaging it read out of the yaml. Feature retreiver picks that up so those numbers do not have to be retyped; sets made before it existed simply get an empty dict.
 
 Feature retreiver takes the case dictionary and the dataset directory as inputs, as well as the grid settings, and can retreive a range of features from the output files.

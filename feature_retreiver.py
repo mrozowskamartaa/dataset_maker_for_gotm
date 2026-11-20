@@ -488,14 +488,25 @@ class FeatureRetreiver:
             bl_depths = self.bl_depths_for(
                 case=case, output=output, bl_methods=bl_methods
             )
-            profile = output[variable].T
-            z = vertical_dim(profile)
+            dim = vertical_dim(output[variable])
+            values = output[variable].transpose("time", dim).values
+
+            # depth below the free surface of each level, measured the same way as the
+            # boundary layer depth, rather than assuming the surface sits at z = 0
+            surface = output['zi'].values[:, -1]
+            depth_below = surface[:, np.newaxis] - output[dim].transpose("time", dim).values
+
+            # an integral, not a plain sum, so the result does not scale with the number of
+            # levels - dz differs per case on the f_u_star grid
+            dz = self.get_dz(output=output)
+
             for j, method in enumerate(bl_methods):
-                criterion_1 = profile[z] > -bl_depths[method]
-                criterion_2 = profile[z] < -bl_depths[method]/2
-                array[i, :, j] = self.align_time(
-                    profile.where(criterion_1).where(criterion_2).sum(dim=z, skipna=True).values
-                    )
+                h = bl_depths[method]
+                inside = (depth_below >= 0) & (depth_below <= h[:, np.newaxis])
+                integral = np.where(inside, values, 0.0).sum(axis=1) * dz
+                # no resolved boundary layer is not a zero integral
+                integral = np.where(h > 0, integral, np.nan)
+                array[i, :, j] = self.align_time(integral)
 
         data_vars = {variable: xr.DataArray(
             array,
@@ -627,7 +638,7 @@ class FeatureRetreiver:
 
             if method == 'mean':
                 array[i] = self.align_time(sampled.mean(axis=-1).T)
-            elif method == 'diff':
+            elif method == 'difference':
                 array[i] = self.align_time(np.diff(sampled, axis=-1).T)
 
         data_vars = {f"{variable}_bl_mean": xr.DataArray(
@@ -706,6 +717,13 @@ class FeatureRetreiver:
         for i, case, output in self.each_case():
             tau = self.case_dict[case]['tx']
             f = calculate_f(latitude=self.case_dict[case]['lat'])
+
+            # there is no Ekman spiral at f = 0 (its thickness is infinite), so there is
+            # nothing to filter out; NaN rather than a division by zero
+            if np.isclose(f, 0.0):
+                u_i[i], v_i[i] = np.nan, np.nan
+                continue
+
             nu = 0.1
             delta = compute_ekman_layer_thickness(nu=nu, f=f)
             z = output['z'].values[0]
