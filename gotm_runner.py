@@ -11,7 +11,8 @@ def run_gotm_experiments(
         training_set_name: str,
         case_dict: dict,
         depth: int = 400,
-        vertical_spacing: float = 1.0
+        vertical_spacing: float = 1.0,
+        vary_init_mld: bool = False
     ) -> list[str]:
 
     source_file = os.path.join(root_dir, source_dir_name, "gotm.yaml")
@@ -47,12 +48,13 @@ def run_gotm_experiments(
         os.makedirs(case_dir, exist_ok=True)
         shutil.copy(source_file, case_dir)
         case_file = os.path.join(case_dir, "gotm.yaml")
+        mld = case_specs["mld"] if vary_init_mld else 1
 
         t_profile_pattern = r'^(?P<indent>\s*)file:\s+t_prof.dat'
         t_profile_file = make_t_profile(
             case_dir=case_dir,
             depth=depth,
-            mld=1,
+            mld=mld,
             temp_grad=case_specs["temp_grad"],
             vertical_spacing=vertical_spacing
         )
